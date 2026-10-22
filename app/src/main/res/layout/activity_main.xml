@@ -73,6 +73,13 @@
         android:text="Dibujar sector" />
 
     <Button
+        android:id="@+id/btnClear"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="16dp"
+        android:text="Borrar sector rojo" />
+
+    <Button
         android:id="@+id/btnHome"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

@@ -97,6 +97,15 @@ class MainActivity : AppCompatActivity() {
         updateHint()
 
         btnZone.setOnClickListener { toggleDrawing() }
+        findViewById<Button>(R.id.btnClear).setOnClickListener {
+            overlay.drawing = false
+            overlay.zone.clear()
+            overlay.invalidate()
+            prefs.edit().putString("zone", "").apply()
+            btnZone.text = "Dibujar sector"
+            updateHint()
+            toast("Sector borrado: ahora vigila toda la imagen")
+        }
         btnTrack.setOnClickListener {
             prefs.edit().putBoolean("track", !prefs.getBoolean("track", true)).apply()
             updateTrackButton()
@@ -117,9 +126,9 @@ class MainActivity : AppCompatActivity() {
         aiThread.execute {
             try {
                 val opts = ObjectDetector.ObjectDetectorOptions.builder()
-                    .setBaseOptions(BaseOptions.builder().setModelAssetPath("efficientdet_lite0.tflite").build())
+                    .setBaseOptions(BaseOptions.builder().setModelAssetPath("efficientdet_lite2.tflite").build())
                     .setRunningMode(RunningMode.IMAGE)
-                    .setScoreThreshold(0.45f)
+                    .setScoreThreshold(0.3f)
                     .setMaxResults(5)
                     .setCategoryAllowlist(listOf("person"))
                     .build()
@@ -210,13 +219,13 @@ class MainActivity : AppCompatActivity() {
             if (detecting || overlay.drawing) return
             val tv = playerView.videoSurfaceView as? TextureView ?: return
             if (player?.playbackState != Player.STATE_READY) return
-            val bmp = tv.getBitmap(640, 360) ?: return
+            val bmp = tv.getBitmap(960, 540) ?: return
             detecting = true
             aiThread.execute {
                 val boxes = try {
                     d.detect(BitmapImageBuilder(bmp).build()).detections().map {
                         val b = it.boundingBox()
-                        RectF(b.left / 640f, b.top / 360f, b.right / 640f, b.bottom / 360f)
+                        RectF(b.left / 960f, b.top / 540f, b.right / 960f, b.bottom / 540f)
                     }
                 } catch (_: Exception) { emptyList() }
                 runOnUiThread {
