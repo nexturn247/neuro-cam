@@ -130,7 +130,7 @@ class MainActivity : AppCompatActivity() {
                 val opts = ObjectDetector.ObjectDetectorOptions.builder()
                     .setBaseOptions(BaseOptions.builder().setModelAssetPath("efficientdet_lite2.tflite").build())
                     .setRunningMode(RunningMode.IMAGE)
-                    .setScoreThreshold(0.3f)
+                    .setScoreThreshold(0.5f)
                     .setMaxResults(5)
                     .setCategoryAllowlist(listOf("person"))
                     .build()
@@ -218,7 +218,7 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             main.postDelayed(this, TICK)
             val d = detector ?: return
-            if (detecting || overlay.drawing) return
+            if (detecting || overlay.drawing || ptzBusy) return // girando = imagen movida, no mira
             val tv = playerView.videoSurfaceView as? TextureView ?: return
             if (player?.playbackState != Player.STATE_READY) return
             val bmp = tv.getBitmap(960, 540) ?: return
@@ -238,7 +238,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun handle(boxes: List<RectF>, frame: Bitmap) {
+    private var prevBoxes: List<RectF> = emptyList()
+
+    private fun iou(a: RectF, b: RectF): Float {
+        val l = maxOf(a.left, b.left); val t = maxOf(a.top, b.top)
+        val r = minOf(a.right, b.right); val bt = minOf(a.bottom, b.bottom)
+        if (r <= l || bt <= t) return 0f
+        val inter = (r - l) * (bt - t)
+        return inter / (a.width() * a.height() + b.width() * b.height() - inter)
+    }
+
+    private fun handle(raw: List<RectF>, frame: Bitmap) {
+        // 1) forma de persona: no más ancha que alta, ni del tamaño de media imagen
+        val shaped = raw.filter { it.width() <= it.height() * 1.2f && it.width() < 0.6f }
+        // 2) tiene que aparecer en dos imágenes seguidas en el mismo lugar
+        val boxes = shaped.filter { b -> prevBoxes.any { iou(it, b) > 0.3f } }
+        prevBoxes = shaped
         overlay.setBoxes(boxes)
         val now = System.currentTimeMillis()
 
