@@ -57,7 +57,8 @@ class Onvif(private val ip: String, private val user: String, private val pass: 
     fun test(): String? = try { token(); null } catch (e: Exception) { e.message ?: "Error" }
 
     /** Mueve un rato y frena. x: -1 izquierda / 1 derecha. y: -1 abajo / 1 arriba. */
-    fun pulse(x: Float, y: Float, ms: Long = 400) {
+    fun pulse(xIn: Float, y: Float, ms: Long = 400) {
+        val x = -xIn // la MC200 tiene el giro horizontal invertido
         val t = token()
         val r = call("""<tptz:ContinuousMove><tptz:ProfileToken>$t</tptz:ProfileToken><tptz:Velocity><tt:PanTilt x="$x" y="$y"/></tptz:Velocity></tptz:ContinuousMove>""")
         if (r.contains("Fault")) {

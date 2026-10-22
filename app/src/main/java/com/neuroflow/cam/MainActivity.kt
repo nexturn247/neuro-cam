@@ -69,6 +69,7 @@ class MainActivity : AppCompatActivity() {
     private var lastSeen = 0L
     private var lastAlert = 0L
     private var homeArrivedAt = 0L
+    private var settleUntil = 0L      // espera a que el video se ponga al día después de girar
 
     companion object {
         const val ALERT_COOLDOWN = 60_000L   // un aviso por minuto como máximo
@@ -249,18 +250,27 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Gira la cámara para dejar a la persona en el centro. */
+    /**
+     * Gira la cámara para dejar a la persona en el centro.
+     * Giros cortos proporcionales a la distancia, y después espera a que el video
+     * se actualice antes de decidir otro giro (así no se pasa de largo).
+     */
     private fun follow(b: RectF) {
         val o = onvif ?: return
-        if (ptzBusy) return
+        val now = System.currentTimeMillis()
+        if (ptzBusy || now < settleUntil) return
         val dx = b.centerX() - 0.5f
         val dy = b.centerY() - 0.5f
-        val x = if (abs(dx) > 0.15f) (if (dx > 0) 0.5f else -0.5f) else 0f
-        val y = if (abs(dy) > 0.25f) (if (dy > 0) -0.4f else 0.4f) else 0f
-        if (x == 0f && y == 0f) return
+        val moveX = abs(dx) > 0.2f
+        val moveY = abs(dy) > 0.3f
+        if (!moveX && !moveY) return
+        val x = if (moveX) (if (dx > 0) 0.35f else -0.35f) else 0f
+        val y = if (moveY) (if (dy > 0) -0.3f else 0.3f) else 0f
+        val ms = (maxOf(abs(dx), abs(dy)) * 500).toLong().coerceIn(100, 250)
         ptzBusy = true
+        settleUntil = now + ms + 1500
         ptzThread.execute {
-            try { o.pulse(x, y, 300) } catch (_: Exception) {}
+            try { o.pulse(x, y, ms) } catch (_: Exception) {}
             ptzBusy = false
         }
     }
