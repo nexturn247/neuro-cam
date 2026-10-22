@@ -70,6 +70,8 @@ class MainActivity : AppCompatActivity() {
     private var lastAlert = 0L
     private var homeArrivedAt = 0L
     private var settleUntil = 0L
+    private var prevCx = 0.5f
+    private var prevT = 0L
     private var lastPos = -1L         // para detectar video congelado
     private var lastPosChange = 0L      // espera a que el video se ponga al día después de girar
 
@@ -264,6 +266,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (prefs.getBoolean("track", true) && onvif != null) {
             tracking = true
+            prevT = 0L
             overlay.showZone = false
             status.text = "🎯 Siguiendo persona"
             follow(intruder)
@@ -279,19 +282,25 @@ class MainActivity : AppCompatActivity() {
         val o = onvif ?: return
         val now = System.currentTimeMillis()
         if (ptzBusy || now < settleUntil) return
-        val dx = b.centerX() - 0.5f
+        // la lente es muy abierta: la persona se mueve poco en la imagen,
+        // así que corrige apenas se corre del centro y se adelanta a hacia dónde camina
+        val cx = b.centerX()
+        val dt = (now - prevT).coerceAtLeast(1)
+        val vx = if (prevT != 0L && dt < 2000) (cx - prevCx) / dt * 1000f else 0f
+        prevCx = cx; prevT = now
+        val dx = (cx + vx * 0.8f).coerceIn(0f, 1f) - 0.5f
         val dy = b.centerY() - 0.5f
-        val moveX = abs(dx) > 0.15f
-        val moveY = abs(dy) > 0.3f
+        val moveX = abs(dx) > 0.07f
+        val moveY = abs(dy) > 0.22f
         if (!moveX && !moveY) return
         // velocidad máxima, y el tiempo de giro según qué tan lejos del centro está
         // misma velocidad que las flechas (que andan bien)
         val x = if (moveX) (if (dx > 0) 0.6f else -0.6f) else 0f
         val y = if (moveY) (if (dy > 0) -0.6f else 0.6f) else 0f
-        val ms = (maxOf(abs(dx), abs(dy)) * 1600).toLong().coerceIn(300, 800)
+        val ms = (maxOf(abs(dx), abs(dy)) * 2000).toLong().coerceIn(200, 900)
         val lado = when { x > 0 -> "derecha"; x < 0 -> "izquierda"; y > 0 -> "arriba"; else -> "abajo" }
         ptzBusy = true
-        settleUntil = now + ms + 900
+        settleUntil = now + ms + 700
         ptzThread.execute {
             val r = try { o.pulse(x, y, ms) } catch (e: Exception) { "error: ${e.message}" }
             runOnUiThread { hint.text = "Diagnóstico: persona a la $lado (${"%.2f".format(dx)}) · giro $ms ms · cámara: $r" }
