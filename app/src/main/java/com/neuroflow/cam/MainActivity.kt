@@ -103,6 +103,12 @@ class MainActivity : AppCompatActivity() {
         }
         findViewById<Button>(R.id.btnHome).setOnClickListener { saveHome() }
         findViewById<Button>(R.id.btnSettings).setOnClickListener { showSettings() }
+        findViewById<Button>(R.id.flip).setOnClickListener {
+            val v = !prefs.getBoolean("invert", true)
+            prefs.edit().putBoolean("invert", v).apply()
+            onvif?.invertPan = v
+            toast(if (v) "Izquierda/derecha invertidas" else "Izquierda/derecha normales")
+        }
         findViewById<Button>(R.id.left).setOnClickListener { manualMove(-0.6f, 0f) }
         findViewById<Button>(R.id.right).setOnClickListener { manualMove(0.6f, 0f) }
         findViewById<Button>(R.id.up).setOnClickListener { manualMove(0f, 0.6f) }
@@ -133,7 +139,7 @@ class MainActivity : AppCompatActivity() {
         val ip = prefs.getString("ip", "")!!
         val user = prefs.getString("user", "")!!
         val pass = prefs.getString("pass", "")!!
-        onvif = Onvif(ip, user, pass)
+        onvif = Onvif(ip, user, pass).also { it.invertPan = prefs.getBoolean("invert", true) }
 
         player?.release()
         val p = ExoPlayer.Builder(this).build()
@@ -200,7 +206,6 @@ class MainActivity : AppCompatActivity() {
     private val tick = object : Runnable {
         override fun run() {
             main.postDelayed(this, TICK)
-            watchdog()
             val d = detector ?: return
             if (detecting || overlay.drawing) return
             val tv = playerView.videoSurfaceView as? TextureView ?: return
@@ -219,20 +224,6 @@ class MainActivity : AppCompatActivity() {
                     handle(boxes, bmp)
                 }
             }
-        }
-    }
-
-    /** Si el video se congela más de 10 s, reconecta solo. */
-    private fun watchdog() {
-        val p = player ?: return
-        if (p.playbackState != Player.STATE_READY) return
-        val now = System.currentTimeMillis()
-        val pos = p.currentPosition
-        if (pos != lastPos) { lastPos = pos; lastPosChange = now; return }
-        if (lastPosChange != 0L && now - lastPosChange > 10_000) {
-            lastPosChange = now
-            status.text = "Video trabado, reconectando..."
-            connect()
         }
     }
 
