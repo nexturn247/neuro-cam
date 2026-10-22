@@ -18,7 +18,7 @@ class Onvif(private val ip: String, private val user: String, private val pass: 
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(4, TimeUnit.SECONDS)
         .build()
     private val url get() = "http://$ip:$port/onvif/service"
     private var profile: String? = null
@@ -65,7 +65,10 @@ class Onvif(private val ip: String, private val user: String, private val pass: 
             call("""<tptz:RelativeMove><tptz:ProfileToken>$t</tptz:ProfileToken><tptz:Translation><tt:PanTilt x="${x * 0.1f}" y="${y * 0.1f}"/></tptz:Translation></tptz:RelativeMove>""")
             return
         }
-        Thread.sleep(ms)
+        try { Thread.sleep(ms) } finally { stop(t) }
+    }
+
+    private fun stop(t: String) {
         call("""<tptz:Stop><tptz:ProfileToken>$t</tptz:ProfileToken><tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>false</tptz:Zoom></tptz:Stop>""")
     }
 

@@ -69,7 +69,9 @@ class MainActivity : AppCompatActivity() {
     private var lastSeen = 0L
     private var lastAlert = 0L
     private var homeArrivedAt = 0L
-    private var settleUntil = 0L      // espera a que el video se ponga al día después de girar
+    private var settleUntil = 0L
+    private var lastPos = -1L         // para detectar video congelado
+    private var lastPosChange = 0L      // espera a que el video se ponga al día después de girar
 
     companion object {
         const val ALERT_COOLDOWN = 60_000L   // un aviso por minuto como máximo
@@ -198,6 +200,7 @@ class MainActivity : AppCompatActivity() {
     private val tick = object : Runnable {
         override fun run() {
             main.postDelayed(this, TICK)
+            watchdog()
             val d = detector ?: return
             if (detecting || overlay.drawing) return
             val tv = playerView.videoSurfaceView as? TextureView ?: return
@@ -216,6 +219,20 @@ class MainActivity : AppCompatActivity() {
                     handle(boxes, bmp)
                 }
             }
+        }
+    }
+
+    /** Si el video se congela más de 10 s, reconecta solo. */
+    private fun watchdog() {
+        val p = player ?: return
+        if (p.playbackState != Player.STATE_READY) return
+        val now = System.currentTimeMillis()
+        val pos = p.currentPosition
+        if (pos != lastPos) { lastPos = pos; lastPosChange = now; return }
+        if (lastPosChange != 0L && now - lastPosChange > 10_000) {
+            lastPosChange = now
+            status.text = "Video trabado, reconectando..."
+            connect()
         }
     }
 
@@ -261,14 +278,15 @@ class MainActivity : AppCompatActivity() {
         if (ptzBusy || now < settleUntil) return
         val dx = b.centerX() - 0.5f
         val dy = b.centerY() - 0.5f
-        val moveX = abs(dx) > 0.2f
+        val moveX = abs(dx) > 0.15f
         val moveY = abs(dy) > 0.3f
         if (!moveX && !moveY) return
-        val x = if (moveX) (if (dx > 0) 0.35f else -0.35f) else 0f
-        val y = if (moveY) (if (dy > 0) -0.3f else 0.3f) else 0f
-        val ms = (maxOf(abs(dx), abs(dy)) * 500).toLong().coerceIn(100, 250)
+        // velocidad máxima, y el tiempo de giro según qué tan lejos del centro está
+        val x = if (moveX) (if (dx > 0) 1f else -1f) else 0f
+        val y = if (moveY) (if (dy > 0) -1f else 1f) else 0f
+        val ms = (maxOf(abs(dx), abs(dy)) * 1400).toLong().coerceIn(150, 600)
         ptzBusy = true
-        settleUntil = now + ms + 1500
+        settleUntil = now + ms + 900
         ptzThread.execute {
             try { o.pulse(x, y, ms) } catch (_: Exception) {}
             ptzBusy = false
