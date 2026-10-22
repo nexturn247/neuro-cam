@@ -23,6 +23,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import androidx.media3.ui.PlayerView
@@ -72,13 +73,17 @@ class MainActivity : AppCompatActivity() {
     private var settleUntil = 0L
     private var prevCx = 0.5f
     private var prevT = 0L
-    private var lastPos = -1L         // para detectar video congelado
-    private var lastPosChange = 0L      // espera a que el video se ponga al día después de girar
+    private var videoLag = 500L       // cuánto atrasa el video que estamos viendo (ms)
+    private var lastCx = 0.5f         // dónde se vio a la persona por última vez
+    private var searches = 0          // giros de búsqueda hechos desde que se perdió
 
     companion object {
         const val ALERT_COOLDOWN = 60_000L   // un aviso por minuto como máximo
         const val LOST_TIMEOUT = 15_000L     // sin ver a nadie 15 s: vuelve a su posición
-        const val TICK = 500L
+        const val TICK = 150L                // la IA mira apenas termina la imagen anterior
+        const val SETTLE_EXTRA = 600L        // atraso propio de la cámara + decodificar
+        const val FRAME_W = 640
+        const val FRAME_H = 360
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -153,7 +158,12 @@ class MainActivity : AppCompatActivity() {
         onvif = Onvif(ip, user, pass).also { it.invertPan = prefs.getBoolean("invert", true) }
 
         player?.release()
-        val p = ExoPlayer.Builder(this).build()
+        // buffer mínimo: preferimos ver "ahora" aunque alguna vez se trabe un poquito
+        val lowLatency = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(300, 1000, 100, 200)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+        val p = ExoPlayer.Builder(this).setLoadControl(lowLatency).build()
         player = p
         playerView.player = p
         val url = "rtsp://${Uri.encode(user)}:${Uri.encode(pass)}@$ip:554/stream2"
@@ -217,17 +227,19 @@ class MainActivity : AppCompatActivity() {
     private val tick = object : Runnable {
         override fun run() {
             main.postDelayed(this, TICK)
+            val p = player ?: return
+            if (p.playbackState != Player.STATE_READY) return
+            catchUp(p)
             val d = detector ?: return
             if (detecting || overlay.drawing || ptzBusy) return // girando = imagen movida, no mira
             val tv = playerView.videoSurfaceView as? TextureView ?: return
-            if (player?.playbackState != Player.STATE_READY) return
-            val bmp = tv.getBitmap(960, 540) ?: return
+            val bmp = tv.getBitmap(FRAME_W, FRAME_H) ?: return
             detecting = true
             aiThread.execute {
                 val boxes = try {
                     d.detect(BitmapImageBuilder(bmp).build()).detections().map {
                         val b = it.boundingBox()
-                        RectF(b.left / 960f, b.top / 540f, b.right / 960f, b.bottom / 540f)
+                        RectF(b.left / FRAME_W, b.top / FRAME_H, b.right / FRAME_W, b.bottom / FRAME_H)
                     }
                 } catch (_: Exception) { emptyList() }
                 runOnUiThread {
@@ -236,6 +248,18 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    /** Si el video se fue quedando atrás, lo reproduce un poco más rápido hasta alcanzar el "en vivo". */
+    private fun catchUp(p: ExoPlayer) {
+        val lag = (p.bufferedPosition - p.currentPosition).coerceIn(0, 3000)
+        videoLag = lag
+        val want = when {
+            lag > 700 -> 1.3f
+            lag < 250 -> 1f
+            else -> p.playbackParameters.speed
+        }
+        if (want != p.playbackParameters.speed) p.setPlaybackSpeed(want)
     }
 
     private var prevBoxes: List<RectF> = emptyList()
@@ -254,15 +278,21 @@ class MainActivity : AppCompatActivity() {
         // 2) tiene que aparecer en dos imágenes seguidas en el mismo lugar
         val boxes = shaped.filter { b -> prevBoxes.any { iou(it, b) > 0.3f } }
         prevBoxes = shaped
-        overlay.setBoxes(boxes)
+        overlay.setBoxes(if (tracking) shaped else boxes)
         val now = System.currentTimeMillis()
 
         if (tracking) {
-            if (boxes.isNotEmpty()) {
+            // ya la estamos siguiendo: no hace falta esperar la confirmación de dos imágenes
+            if (shaped.isNotEmpty()) {
                 lastSeen = now
-                follow(boxes.maxBy { it.width() * it.height() })
+                searches = 0
+                val target = shaped.minBy { abs(it.centerX() - lastCx) }
+                lastCx = target.centerX()
+                follow(target)
             } else if (now - lastSeen > LOST_TIMEOUT) {
                 goHome()
+            } else {
+                search(now)
             }
             return
         }
@@ -282,6 +312,8 @@ class MainActivity : AppCompatActivity() {
         if (prefs.getBoolean("track", true) && onvif != null) {
             tracking = true
             prevT = 0L
+            lastCx = intruder.centerX()
+            searches = 0
             overlay.showZone = false
             status.text = "🎯 Siguiendo persona"
             follow(intruder)
@@ -290,36 +322,57 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Gira la cámara para dejar a la persona en el centro.
-     * Giros cortos proporcionales a la distancia, y después espera a que el video
-     * se actualice antes de decidir otro giro (así no se pasa de largo).
+     * Giro corto proporcional a la distancia. Después del giro NO vuelve a decidir
+     * hasta que el video muestre la cámara ya quieta (el video viene atrasado):
+     * si decidiera antes, vería a la persona todavía corrida y giraría de nuevo (se pasa de largo).
      */
     private fun follow(b: RectF) {
-        val o = onvif ?: return
         val now = System.currentTimeMillis()
-        if (ptzBusy || now < settleUntil) return
-        // la lente es muy abierta: la persona se mueve poco en la imagen,
-        // así que corrige apenas se corre del centro y se adelanta a hacia dónde camina
+        if (ptzBusy || now < settleUntil || onvif == null) return
         val cx = b.centerX()
-        val dt = (now - prevT).coerceAtLeast(1)
-        val vx = if (prevT != 0L && dt < 2000) (cx - prevCx) / dt * 1000f else 0f
+        // hacia dónde camina, medido sólo entre imágenes con la cámara quieta
+        val dt = now - prevT
+        val vx = if (prevT != 0L && dt in 100L..1500L) ((cx - prevCx) / dt * 1000f).coerceIn(-0.4f, 0.4f) else 0f
         prevCx = cx; prevT = now
-        val dx = (cx + vx * 0.8f).coerceIn(0f, 1f) - 0.5f
+        val dx = (cx + vx * 0.3f).coerceIn(0f, 1f) - 0.5f
         val dy = b.centerY() - 0.5f
-        val moveX = abs(dx) > 0.07f
+        val moveX = abs(dx) > 0.08f
         val moveY = abs(dy) > 0.22f
         if (!moveX && !moveY) return
-        // velocidad máxima, y el tiempo de giro según qué tan lejos del centro está
-        // misma velocidad que las flechas (que andan bien)
         val x = if (moveX) (if (dx > 0) 0.6f else -0.6f) else 0f
         val y = if (moveY) (if (dy > 0) -0.6f else 0.6f) else 0f
-        val ms = (maxOf(abs(dx), abs(dy)) * 2000).toLong().coerceIn(200, 900)
-        val lado = when { x > 0 -> "derecha"; x < 0 -> "izquierda"; y > 0 -> "arriba"; else -> "abajo" }
+        val ms = (maxOf(if (moveX) abs(dx) else 0f, if (moveY) abs(dy) else 0f) * 1600).toLong().coerceIn(150, 800)
+        turn(x, y, ms, "persona a la ${lado(x, y)} (${"%.2f".format(dx)})")
+    }
+
+    /** Se perdió: gira un poco hacia el lado por donde se fue (máximo 2 veces). */
+    private fun search(now: Long) {
+        if (ptzBusy || now < settleUntil || searches >= 2) return
+        if (now - lastSeen < 800) return            // capaz que sólo falló una imagen
+        val edge = lastCx - 0.5f
+        if (abs(edge) < 0.25f) return               // se perdió en el medio: no adivina
+        searches++
+        val x = if (edge > 0) 0.6f else -0.6f
+        turn(x, 0f, 500, "buscando a la ${lado(x, 0f)}")
+    }
+
+    private fun lado(x: Float, y: Float) = when { x > 0 -> "derecha"; x < 0 -> "izquierda"; y > 0 -> "arriba"; else -> "abajo" }
+
+    private fun turn(x: Float, y: Float, ms: Long, why: String) {
+        val o = onvif ?: return
         ptzBusy = true
-        settleUntil = now + ms + 700
+        settleUntil = Long.MAX_VALUE
         ptzThread.execute {
             val r = try { o.pulse(x, y, ms) } catch (e: Exception) { "error: ${e.message}" }
-            runOnUiThread { hint.text = "Diagnóstico: persona a la $lado (${"%.2f".format(dx)}) · giro $ms ms · cámara: $r" }
-            ptzBusy = false
+            runOnUiThread {
+                // espera lo que atrasa el video desde que la cámara frenó de verdad
+                val wait = videoLag + SETTLE_EXTRA
+                settleUntil = System.currentTimeMillis() + wait
+                prevT = 0L                 // la velocidad medida con la cámara girando no sirve
+                prevBoxes = emptyList()
+                ptzBusy = false
+                hint.text = "Diagnóstico: $why · giro $ms ms · espera $wait ms · cámara: $r"
+            }
         }
     }
 
