@@ -253,6 +253,9 @@ class MainActivity : AppCompatActivity() {
         if (now < homeArrivedAt) return // todavía volviendo
         if (status.text.startsWith("↩")) status.text = "👁 Vigilando"
 
+        if (boxes.isNotEmpty()) hint.text = "Diagnóstico: veo ${boxes.size} persona(s)" +
+            (if (boxes.none { overlay.contains(it.centerX(), it.bottom) }) " fuera del sector" else "") +
+            (if (!prefs.getBoolean("track", true)) " · seguimiento apagado" else "")
         val intruder = boxes.firstOrNull { overlay.contains(it.centerX(), it.bottom) } ?: return
         lastSeen = now
         if (now - lastAlert > ALERT_COOLDOWN) {
@@ -282,13 +285,16 @@ class MainActivity : AppCompatActivity() {
         val moveY = abs(dy) > 0.3f
         if (!moveX && !moveY) return
         // velocidad máxima, y el tiempo de giro según qué tan lejos del centro está
-        val x = if (moveX) (if (dx > 0) 1f else -1f) else 0f
-        val y = if (moveY) (if (dy > 0) -1f else 1f) else 0f
-        val ms = (maxOf(abs(dx), abs(dy)) * 1400).toLong().coerceIn(150, 600)
+        // misma velocidad que las flechas (que andan bien)
+        val x = if (moveX) (if (dx > 0) 0.6f else -0.6f) else 0f
+        val y = if (moveY) (if (dy > 0) -0.6f else 0.6f) else 0f
+        val ms = (maxOf(abs(dx), abs(dy)) * 1600).toLong().coerceIn(300, 800)
+        val lado = when { x > 0 -> "derecha"; x < 0 -> "izquierda"; y > 0 -> "arriba"; else -> "abajo" }
         ptzBusy = true
         settleUntil = now + ms + 900
         ptzThread.execute {
-            try { o.pulse(x, y, ms) } catch (_: Exception) {}
+            val r = try { o.pulse(x, y, ms) } catch (e: Exception) { "error: ${e.message}" }
+            runOnUiThread { hint.text = "Diagnóstico: persona a la $lado (${"%.2f".format(dx)}) · giro $ms ms · cámara: $r" }
             ptzBusy = false
         }
     }
