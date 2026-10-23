@@ -55,7 +55,25 @@ class ZoneOverlay(context: Context, attrs: AttributeSet?) : View(context, attrs)
         }
     }
 
-    /** ¿El punto (pies de la persona) está dentro del sector? Sin sector = toda la imagen. */
+    companion object {
+        fun parse(s: String): List<PointF> = s.split(";").filter { it.contains(",") }.map {
+            val (x, y) = it.split(","); PointF(x.toFloat(), y.toFloat())
+        }
+
+        /** ¿El punto (pies de la persona) está dentro del sector? Sin sector = toda la imagen. */
+        fun contains(zone: List<PointF>, x: Float, y: Float): Boolean {
+            if (zone.size < 3) return true
+            var inside = false
+            var j = zone.size - 1
+            for (i in zone.indices) {
+                val a = zone[i]; val b = zone[j]
+                if ((a.y > y) != (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) inside = !inside
+                j = i
+            }
+            return inside
+        }
+    }
+
     fun contains(x: Float, y: Float): Boolean {
         if (zone.size < 3) return true
         var inside = false
