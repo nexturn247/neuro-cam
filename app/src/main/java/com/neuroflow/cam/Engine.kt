@@ -345,20 +345,18 @@ class Engine(private val ctx: Context) {
         val shaped = raw.filter { it.width() <= it.height() * 1.2f && it.width() < 0.6f }
         val boxes = shaped.filter { b -> prevBoxes.any { iou(it, b) > 0.3f } }
         prevBoxes = shaped
-        ui?.onBoxes(if (tracking) shaped else boxes, tracking)
+        ui?.onBoxes(boxes, tracking)
         val now = System.currentTimeMillis()
 
         if (tracking) {
-            if (shaped.isNotEmpty()) {
+            val target = boxes.filter { abs(it.centerX() - lastCx) < 0.35f }
+                .minByOrNull { abs(it.centerX() - lastCx) }
+            if (target != null) {
                 lastSeen = now
-                searches = 0
-                val target = shaped.minBy { abs(it.centerX() - lastCx) }
                 lastCx = target.centerX()
                 follow(target)
             } else if (now - lastSeen > LOST_TIMEOUT) {
                 goHome()
-            } else {
-                search(now)
             }
             return
         }
@@ -392,30 +390,15 @@ class Engine(private val ctx: Context) {
         val dt = now - prevT
         val vx = if (prevT != 0L && dt in 100L..1500L) ((cx - prevCx) / dt * 1000f).coerceIn(-0.4f, 0.4f) else 0f
         prevCx = cx; prevT = now
-        val dx = (cx + vx * 0.3f).coerceIn(0f, 1f) - 0.5f
+        val dx = cx - 0.5f
         val dy = b.centerY() - 0.5f
-        val moveX = abs(dx) > 0.08f
+        val moveX = abs(dx) > 0.12f
         val moveY = abs(dy) > 0.22f
         if (!moveX && !moveY) return
 
-        val o = onvif!!
-        if (o.relativeOk != false) {
-            val rawDx = cx - 0.5f
-            if (now - lastAimAt < 5000 && abs(lastAimDx) > 0.08f) {
-                val r = (rawDx / lastAimDx).coerceIn(-1f, 1f)
-                panGain = (panGain * (1f + 0.5f * r)).coerceIn(0.15f, 2f)
-                prefs.edit().putFloat("panGain", panGain).apply()
-            }
-            val tx = if (moveX) dx * panGain else 0f
-            val ty = if (moveY) -dy * TILT_GAIN else 0f
-            lastAimDx = if (moveX) rawDx else 0f
-            aimTurn(tx, ty, "persona a la ${lado(tx, ty)} (${"%.2f".format(dx)})")
-            return
-        }
-
         val x = if (moveX) (if (dx > 0) TRACK_SPEED else -TRACK_SPEED) else 0f
         val y = if (moveY) (if (dy > 0) -TRACK_SPEED else TRACK_SPEED) else 0f
-        val ms = (maxOf(if (moveX) abs(dx) else 0f, if (moveY) abs(dy) else 0f) * 2400).toLong().coerceIn(200, 1100)
+        val ms = (maxOf(if (moveX) abs(dx) else 0f, if (moveY) abs(dy) else 0f) * 1800).toLong().coerceIn(200, 900)
         turn(x, y, ms, "persona a la ${lado(x, y)} (${"%.2f".format(dx)})")
     }
 
