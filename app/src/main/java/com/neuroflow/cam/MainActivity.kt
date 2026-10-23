@@ -116,7 +116,7 @@ class MainActivity : AppCompatActivity() {
             overlay.zone.clear()
             overlay.invalidate()
             prefs.edit().putString("zone", "").apply()
-            btnZone.text = "Dibujar sector"
+            btnZone.text = "✏️  Dibujar sector"
             updateHint()
             toast("Sector borrado: ahora vigila toda la imagen")
         }
@@ -451,18 +451,20 @@ class MainActivity : AppCompatActivity() {
             overlay.setBoxes(emptyList())
             overlay.drawing = true
             overlay.showZone = true
-            btnZone.text = "✔ Listo"
+            btnZone.text = "✔  Listo, guardar"
             hint.text = "Tocá la imagen para marcar las esquinas del sector (mínimo 3). Sin puntos = toda la imagen."
         } else {
             overlay.drawing = false
             prefs.edit().putString("zone", overlay.zoneToString()).apply()
-            btnZone.text = "Dibujar sector"
+            btnZone.text = "✏️  Dibujar sector"
             updateHint()
         }
     }
 
     private fun updateTrackButton() {
-        btnTrack.text = if (prefs.getBoolean("track", true)) "Seguimiento: SÍ" else "Seguimiento: NO"
+        val on = prefs.getBoolean("track", true)
+        btnTrack.text = if (on) "🎯  Seguimiento: SÍ" else "🎯  Seguimiento: NO"
+        btnTrack.setBackgroundResource(if (on) R.drawable.btn_green else R.drawable.btn_gray)
     }
 
     private fun updateHint() {
