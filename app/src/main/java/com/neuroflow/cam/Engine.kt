@@ -65,7 +65,10 @@ class Engine(private val ctx: Context) {
 
     var onvif: Onvif? = null
         private set
-    private var player: ExoPlayer? = null
+    private var player: ExoPlayer? = null        // video propio (sólo en segundo plano)
+    private var viewPlayer: ExoPlayer? = null    // video de la pantalla (app abierta)
+    private var frameProvider: (() -> Bitmap?)? = null
+    private var framesMissed = 0
     private var reader: ImageReader? = null
     private var detector: ObjectDetector? = null
     private var zone: List<PointF> = emptyList()
@@ -134,8 +137,7 @@ class Engine(private val ctx: Context) {
     fun stop() {
         running = false
         main.removeCallbacksAndMessages(null)
-        player?.release(); player = null
-        reader?.close(); reader = null
+        stopOwnVideo()
         aiThread.execute { detector?.close(); detector = null }
         frameThread.quitSafely()
     }
@@ -152,8 +154,42 @@ class Engine(private val ctx: Context) {
         val user = prefs.getString("user", "")!!
         val pass = prefs.getString("pass", "")!!
         onvif = Onvif(ip, user, pass).also { it.invertPan = prefs.getBoolean("invert", true) }
+        ptzThread.execute {
+            val err = onvif?.test()
+            if (err != null) hint = "Movimiento: $err"
+        }
+        if (frameProvider == null) startOwnVideo() else stopOwnVideo()
+    }
 
-        player?.release()
+    /**
+     * Con la app abierta, la IA usa las imágenes del video de la pantalla (lo que ya andaba bien)
+     * y el motor no abre una segunda conexión a la cámara.
+     */
+    fun foreground(view: ExoPlayer, provider: () -> Bitmap?) {
+        viewPlayer = view
+        frameProvider = provider
+        stopOwnVideo()
+        if (status.startsWith("Conectando") || status.startsWith("Sin video")) status = "👁 Vigilando"
+    }
+
+    /** App cerrada o pantalla apagada: la IA abre su propio video sin pantalla. */
+    fun background() {
+        frameProvider = null
+        viewPlayer = null
+        if (running) startOwnVideo()
+    }
+
+    private fun stopOwnVideo() {
+        player?.release(); player = null
+        reader?.close(); reader = null
+    }
+
+    private fun startOwnVideo() {
+        val ip = prefs.getString("ip", "") ?: ""
+        if (ip.isEmpty()) return
+        val user = prefs.getString("user", "")!!
+        val pass = prefs.getString("pass", "")!!
+        stopOwnVideo()
         val lowLatency = DefaultLoadControl.Builder()
             .setBufferDurationsMs(300, 1000, 100, 200)
             .setPrioritizeTimeOverSizeThresholds(true)
@@ -166,7 +202,7 @@ class Engine(private val ctx: Context) {
         p.setMediaSource(RtspMediaSource.Factory().setForceUseRtpTcp(true).createMediaSource(MediaItem.fromUri(url)))
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_READY && !tracking) status = "👁 Vigilando"
+                if (state == Player.STATE_READY && !tracking) status = "👁 Vigilando (segundo plano)"
             }
             override fun onVideoSizeChanged(size: VideoSize) {
                 val r = reader
@@ -176,16 +212,12 @@ class Engine(private val ctx: Context) {
             }
             override fun onPlayerError(error: PlaybackException) {
                 status = "Sin video, reconectando..."
-                main.postDelayed({ if (running) connect() }, 5000)
+                main.postDelayed({ if (running && frameProvider == null && player === p) startOwnVideo() }, 5000)
             }
         })
         p.prepare()
         p.playWhenReady = true
         status = "Conectando a la cámara..."
-        ptzThread.execute {
-            val err = onvif?.test()
-            if (err != null) hint = "Movimiento: $err"
-        }
     }
 
     /** El video para la IA va a un ImageReader: anda sin pantalla. */
@@ -198,6 +230,7 @@ class Engine(private val ctx: Context) {
                 if (wantFrame) {
                     wantFrame = false
                     val bmp = Yuv.toBitmap(img)
+                    framesMissed = 0
                     main.post { analyze(bmp) }
                 }
             } catch (_: Exception) {
@@ -248,14 +281,26 @@ class Engine(private val ctx: Context) {
         override fun run() {
             if (!running) return
             main.postDelayed(this, TICK)
-            val p = player ?: return
+            val provider = frameProvider
+            val p = (if (provider != null) viewPlayer else player) ?: return
             if (p.playbackState != Player.STATE_READY) return
             catchUp(p)
             if (detector == null || detecting || paused || ptzBusy) return
+            if (provider != null) {
+                val bmp = provider() ?: return
+                detecting = true
+                analyze(bmp)
+                return
+            }
             detecting = true
             wantFrame = true
             // si en 2 s no llegó imagen, libera para volver a pedir
-            main.postDelayed({ if (wantFrame) { wantFrame = false; detecting = false } }, 2000)
+            main.postDelayed({
+                if (wantFrame) {
+                    wantFrame = false; detecting = false
+                    if (++framesMissed >= 5) hint = "Diagnóstico: en segundo plano no llegan imágenes del video"
+                }
+            }, 2000)
         }
     }
 

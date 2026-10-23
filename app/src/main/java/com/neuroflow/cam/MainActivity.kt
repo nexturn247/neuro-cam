@@ -117,6 +117,7 @@ class MainActivity : AppCompatActivity(), Engine.Ui {
     override fun onStop() {
         // la pantalla deja de mostrar, pero la vigilancia sigue en el servicio
         engine?.ui = null
+        engine?.background()
         main.removeCallbacksAndMessages(null)
         player?.release(); player = null
         super.onStop()
@@ -127,6 +128,10 @@ class MainActivity : AppCompatActivity(), Engine.Ui {
         val e = engine
         if (e == null) { main.postDelayed({ attach() }, 500); return }
         e.ui = this
+        val p = player ?: return
+        e.foreground(p) {
+            (playerView.videoSurfaceView as? android.view.TextureView)?.getBitmap(640, 360)
+        }
     }
 
     // ---------- Engine.Ui ----------
@@ -156,7 +161,7 @@ class MainActivity : AppCompatActivity(), Engine.Ui {
         p.setMediaSource(RtspMediaSource.Factory().setForceUseRtpTcp(true).createMediaSource(MediaItem.fromUri(url)))
         p.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
-                main.postDelayed({ if (player === p) startViewer() }, 5000)
+                main.postDelayed({ if (player === p) { startViewer(); attach() } }, 5000)
             }
         })
         p.prepare()
