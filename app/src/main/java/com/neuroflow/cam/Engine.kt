@@ -6,7 +6,6 @@ import android.graphics.Bitmap
 import android.graphics.ImageFormat
 import android.graphics.PointF
 import android.graphics.RectF
-import android.media.ImageReader
 import android.net.Uri
 import android.os.Handler
 import android.os.HandlerThread
@@ -40,7 +39,7 @@ import kotlin.math.abs
 /**
  * El "cerebro": lee el video de la cámara, corre la IA, sigue a la persona y avisa.
  * Vive dentro de VigiaService, así que sigue andando con la app cerrada o la pantalla apagada.
- * El video para la IA se decodifica a un ImageReader (no necesita pantalla).
+ * Con la app abierta usa las imágenes de la pantalla; cerrada, un video fuera de pantalla (GlGrabber).
  */
 @OptIn(UnstableApi::class)
 class Engine(private val ctx: Context) {
@@ -69,7 +68,8 @@ class Engine(private val ctx: Context) {
     private var viewPlayer: ExoPlayer? = null    // video de la pantalla (app abierta)
     private var frameProvider: (() -> Bitmap?)? = null
     private var framesMissed = 0
-    private var reader: ImageReader? = null
+    private var grabber: GlGrabber? = null
+    private val logLines = ArrayDeque<String>()
     private var detector: ObjectDetector? = null
     private var zone: List<PointF> = emptyList()
     private var running = false
@@ -79,7 +79,6 @@ class Engine(private val ctx: Context) {
     var hint = ""
         private set(v) { field = v; main.post { ui?.onHint(v) } }
 
-    @Volatile private var wantFrame = false
     private var detecting = false
     var ptzBusy = false
         private set
@@ -142,6 +141,20 @@ class Engine(private val ctx: Context) {
         frameThread.quitSafely()
     }
 
+    @Synchronized fun log(msg: String) {
+        val t = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+        logLines.addLast("$t $msg")
+        while (logLines.size > 300) logLines.removeFirst()
+    }
+
+    @Synchronized fun logText(): String = buildString {
+        append("Neuro Cam diagnóstico\n")
+        append("estado: $status\nseguimiento: ${prefs.getBoolean("track", true)} invertir: ${prefs.getBoolean("invert", true)}\n")
+        append("sector: ${zone.size} puntos · posición guardada: ${prefs.getString("preset", null) != null}\n")
+        append("app abierta: ${frameProvider != null} · imágenes 2do plano: ${grabber?.frames ?: -1}\n---\n")
+        logLines.forEach { append(it).append('\n') }
+    }
+
     fun reloadZone() {
         zone = ZoneOverlay.parse(prefs.getString("zone", "") ?: "")
     }
@@ -181,7 +194,7 @@ class Engine(private val ctx: Context) {
 
     private fun stopOwnVideo() {
         player?.release(); player = null
-        reader?.close(); reader = null
+        grabber?.release(); grabber = null
     }
 
     private fun startOwnVideo() {
@@ -197,20 +210,23 @@ class Engine(private val ctx: Context) {
         val p = ExoPlayer.Builder(ctx).setLoadControl(lowLatency).build()
         player = p
         p.volume = 0f
-        setReader(p, 640, 360)
+        try {
+            val g = GlGrabber()
+            p.setVideoSurface(g.start())
+            grabber = g
+            log("segundo plano: video sin pantalla listo")
+        } catch (e: Exception) {
+            log("segundo plano: OpenGL falló: ${e.message}")
+            status = "Error de video en segundo plano"
+        }
         val url = "rtsp://${Uri.encode(user)}:${Uri.encode(pass)}@$ip:554/stream2"
         p.setMediaSource(RtspMediaSource.Factory().setForceUseRtpTcp(true).createMediaSource(MediaItem.fromUri(url)))
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_READY && !tracking) status = "👁 Vigilando (segundo plano)"
             }
-            override fun onVideoSizeChanged(size: VideoSize) {
-                val r = reader
-                if (size.width > 0 && (r == null || r.width != size.width || r.height != size.height)) {
-                    setReader(p, size.width, size.height)
-                }
-            }
             override fun onPlayerError(error: PlaybackException) {
+                log("video segundo plano error: ${error.errorCodeName} ${error.message}")
                 status = "Sin video, reconectando..."
                 main.postDelayed({ if (running && frameProvider == null && player === p) startOwnVideo() }, 5000)
             }
@@ -218,27 +234,6 @@ class Engine(private val ctx: Context) {
         p.prepare()
         p.playWhenReady = true
         status = "Conectando a la cámara..."
-    }
-
-    /** El video para la IA va a un ImageReader: anda sin pantalla. */
-    private fun setReader(p: ExoPlayer, w: Int, h: Int) {
-        val old = reader
-        val r = ImageReader.newInstance(w, h, ImageFormat.YUV_420_888, 3)
-        r.setOnImageAvailableListener({ ir ->
-            val img = try { ir.acquireLatestImage() } catch (_: Exception) { null } ?: return@setOnImageAvailableListener
-            try {
-                if (wantFrame) {
-                    wantFrame = false
-                    val bmp = Yuv.toBitmap(img)
-                    framesMissed = 0
-                    main.post { analyze(bmp) }
-                }
-            } catch (_: Exception) {
-            } finally { img.close() }
-        }, frameHandler)
-        reader = r
-        p.setVideoSurface(r.surface)
-        old?.close()
     }
 
     fun manualMove(x: Float, y: Float, onError: (String) -> Unit) {
@@ -271,6 +266,7 @@ class Engine(private val ctx: Context) {
         tracking = false
         homeArrivedAt = System.currentTimeMillis() + 4000
         status = "↩ Volviendo a su posición"
+        log("se perdió: vuelve a su posición")
         if (preset == null) return
         ptzThread.execute { try { o.gotoPreset(preset) } catch (_: Exception) {} }
     }
@@ -292,15 +288,19 @@ class Engine(private val ctx: Context) {
                 analyze(bmp)
                 return
             }
+            val g = grabber ?: return
             detecting = true
-            wantFrame = true
-            // si en 2 s no llegó imagen, libera para volver a pedir
-            main.postDelayed({
-                if (wantFrame) {
-                    wantFrame = false; detecting = false
-                    if (++framesMissed >= 5) hint = "Diagnóstico: en segundo plano no llegan imágenes del video"
+            g.grab { bmp ->
+                main.post {
+                    if (bmp == null) {
+                        detecting = false
+                        if (++framesMissed == 10) log("segundo plano: no llegan imágenes (recibidas ${g.frames})")
+                    } else {
+                        framesMissed = 0
+                        analyze(bmp)
+                    }
                 }
-            }, 2000)
+            }
         }
     }
 
@@ -340,16 +340,23 @@ class Engine(private val ctx: Context) {
         return inter / (a.width() * a.height() + b.width() * b.height() - inter)
     }
 
+    private var lastDetLog = 0L
+
     private fun handle(raw: List<RectF>, frame: Bitmap) {
         if (paused) return
+        val tnow = System.currentTimeMillis()
+        if (raw.isNotEmpty() && tnow - lastDetLog > 1000) {
+            lastDetLog = tnow
+            log("IA: ${raw.size} persona(s) " + raw.joinToString { "x=%.2f y=%.2f %.2fx%.2f".format(it.centerX(), it.centerY(), it.width(), it.height()) } + if (tracking) " [siguiendo]" else "")
+        }
         val shaped = raw.filter { it.width() <= it.height() * 1.2f && it.width() < 0.6f }
         val boxes = shaped.filter { b -> prevBoxes.any { iou(it, b) > 0.3f } }
         prevBoxes = shaped
-        ui?.onBoxes(boxes, tracking)
+        ui?.onBoxes(if (tracking) shaped else boxes, tracking)
         val now = System.currentTimeMillis()
 
         if (tracking) {
-            val target = boxes.filter { abs(it.centerX() - lastCx) < 0.35f }
+            val target = shaped.filter { abs(it.centerX() - lastCx) < 0.35f }
                 .minByOrNull { abs(it.centerX() - lastCx) }
             if (target != null) {
                 lastSeen = now
@@ -379,6 +386,7 @@ class Engine(private val ctx: Context) {
             lastCx = intruder.centerX()
             searches = 0
             status = "🎯 Siguiendo persona"
+            log("empieza seguimiento x=%.2f".format(intruder.centerX()))
             follow(intruder)
         }
     }
@@ -392,7 +400,7 @@ class Engine(private val ctx: Context) {
         prevCx = cx; prevT = now
         val dx = cx - 0.5f
         val dy = b.centerY() - 0.5f
-        val moveX = abs(dx) > 0.12f
+        val moveX = abs(dx) > 0.1f
         val moveY = abs(dy) > 0.22f
         if (!moveX && !moveY) return
 
@@ -446,6 +454,7 @@ class Engine(private val ctx: Context) {
                 prevBoxes = emptyList()
                 ptzBusy = false
                 hint = "Diagnóstico: $why · giro $ms ms · espera $wait ms · cámara: $r"
+                log("giro: $why x=$x y=$y ${ms}ms -> $r")
             }
         }
     }

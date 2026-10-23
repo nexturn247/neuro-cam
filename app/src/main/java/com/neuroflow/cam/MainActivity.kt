@@ -226,6 +226,13 @@ class MainActivity : AppCompatActivity(), Engine.Ui {
             .setTitle("Ajustes de la cámara")
             .setView(box)
             .setCancelable(false)
+            .setNeutralButton("Copiar diagnóstico") { _, _ ->
+                val txt = engine?.logText() ?: "La vigilancia no está corriendo"
+                val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("diagnostico", txt))
+                toast("Diagnóstico copiado: pegalo en el chat")
+            }
+            .setNegativeButton("Cancelar", null)
             .setPositiveButton("Guardar") { _, _ ->
                 prefs.edit()
                     .putString("ip", ip.text.toString().trim())
