@@ -70,6 +70,23 @@ class Onvif(private val ip: String, private val user: String, private val pass: 
         return "OK"
     }
 
+    /** null = no se probó todavía, false = la cámara no acepta giros exactos */
+    var relativeOk: Boolean? = null
+
+    /**
+     * Giro exacto: la cámara gira una cantidad fija y frena sola.
+     * No depende de cuánto tarda en llegar la orden de frenar (eso hacía que se pase de largo).
+     * x, y en unidades ONVIF (-1..1 = todo el recorrido).
+     */
+    fun aim(xIn: Float, y: Float): String {
+        val x = if (invertPan) -xIn else xIn
+        val t = token()
+        val r = call("""<tptz:RelativeMove><tptz:ProfileToken>$t</tptz:ProfileToken><tptz:Translation><tt:PanTilt x="$x" y="$y"/></tptz:Translation></tptz:RelativeMove>""")
+        if (r.contains("Fault") || r.isEmpty()) { relativeOk = false; return "no acepta giro exacto" }
+        relativeOk = true
+        return "giro exacto OK"
+    }
+
     private fun stop(t: String) {
         call("""<tptz:Stop><tptz:ProfileToken>$t</tptz:ProfileToken><tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>false</tptz:Zoom></tptz:Stop>""")
     }

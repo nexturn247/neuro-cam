@@ -75,13 +75,19 @@ class MainActivity : AppCompatActivity() {
     private var prevT = 0L
     private var videoLag = 500L       // cuánto atrasa el video que estamos viendo (ms)
     private var lastCx = 0.5f         // dónde se vio a la persona por última vez
-    private var searches = 0          // giros de búsqueda hechos desde que se perdió
+    private var searches = 0
+    private var panGain = 0.55f       // cuánto girar por cada "media imagen" (se ajusta solo)
+    private var lastAimDx = 0f
+    private var lastAimAt = 0L          // giros de búsqueda hechos desde que se perdió
 
     companion object {
         const val ALERT_COOLDOWN = 60_000L   // un aviso por minuto como máximo
         const val LOST_TIMEOUT = 15_000L     // sin ver a nadie 15 s: vuelve a su posición
         const val TICK = 150L                // la IA mira apenas termina la imagen anterior
-        const val SETTLE_EXTRA = 600L        // atraso propio de la cámara + decodificar
+        const val SETTLE_EXTRA = 600L
+        const val TILT_GAIN = 0.9f
+        const val MOTOR_BASE = 300f          // arranque del motor (ms)
+        const val MOTOR_MS_PER_DEG = 20f     // la MC200 gira lento        // atraso propio de la cámara + decodificar
         const val FRAME_W = 640
         const val FRAME_H = 360
     }
@@ -91,6 +97,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         prefs = getSharedPreferences("neurocam", MODE_PRIVATE)
+        panGain = prefs.getFloat("panGain", 0.55f)
 
         playerView = findViewById(R.id.player)
         overlay = findViewById(R.id.overlay)
@@ -339,10 +346,47 @@ class MainActivity : AppCompatActivity() {
         val moveX = abs(dx) > 0.08f
         val moveY = abs(dy) > 0.22f
         if (!moveX && !moveY) return
+
+        val o = onvif!!
+        if (o.relativeOk != false) {
+            // autoajuste: mira cómo quedó la persona después del último giro exacto
+            val rawDx = cx - 0.5f
+            if (now - lastAimAt < 5000 && abs(lastAimDx) > 0.08f) {
+                val r = (rawDx / lastAimDx).coerceIn(-1f, 1f)  // >0 se quedó corto, <0 se pasó
+                panGain = (panGain * (1f + 0.5f * r)).coerceIn(0.15f, 2f)
+                prefs.edit().putFloat("panGain", panGain).apply()
+            }
+            val tx = if (moveX) dx * panGain else 0f
+            val ty = if (moveY) -dy * TILT_GAIN else 0f
+            lastAimDx = if (moveX) rawDx else 0f
+            aimTurn(tx, ty, "persona a la ${lado(tx, ty)} (${"%.2f".format(dx)})")
+            return
+        }
+
         val x = if (moveX) (if (dx > 0) 0.6f else -0.6f) else 0f
         val y = if (moveY) (if (dy > 0) -0.6f else 0.6f) else 0f
         val ms = (maxOf(if (moveX) abs(dx) else 0f, if (moveY) abs(dy) else 0f) * 1600).toLong().coerceIn(150, 800)
         turn(x, y, ms, "persona a la ${lado(x, y)} (${"%.2f".format(dx)})")
+    }
+
+    /** Giro exacto y espera lo que tarda el motor + el atraso del video. */
+    private fun aimTurn(tx: Float, ty: Float, why: String) {
+        val o = onvif ?: return
+        ptzBusy = true
+        settleUntil = Long.MAX_VALUE
+        ptzThread.execute {
+            val r = try { o.aim(tx, ty) } catch (e: Exception) { "error: ${e.message}" }
+            runOnUiThread {
+                val deg = maxOf(abs(tx) * 180f, abs(ty) * 60f)
+                val wait = (MOTOR_BASE + deg * MOTOR_MS_PER_DEG).toLong() + videoLag + SETTLE_EXTRA
+                settleUntil = System.currentTimeMillis() + wait
+                lastAimAt = System.currentTimeMillis() + wait
+                prevT = 0L
+                prevBoxes = emptyList()
+                ptzBusy = false
+                hint.text = "Diagnóstico: $why · ganancia ${"%.2f".format(panGain)} · espera $wait ms · cámara: $r"
+            }
+        }
     }
 
     /** Se perdió: gira un poco hacia el lado por donde se fue (máximo 2 veces). */
