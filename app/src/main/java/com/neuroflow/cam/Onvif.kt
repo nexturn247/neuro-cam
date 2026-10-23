@@ -81,7 +81,7 @@ class Onvif(private val ip: String, private val user: String, private val pass: 
     fun aim(xIn: Float, y: Float): String {
         val x = if (invertPan) -xIn else xIn
         val t = token()
-        val r = call("""<tptz:RelativeMove><tptz:ProfileToken>$t</tptz:ProfileToken><tptz:Translation><tt:PanTilt x="$x" y="$y"/></tptz:Translation></tptz:RelativeMove>""")
+        val r = call("""<tptz:RelativeMove><tptz:ProfileToken>$t</tptz:ProfileToken><tptz:Translation><tt:PanTilt x="$x" y="$y"/></tptz:Translation><tptz:Speed><tt:PanTilt x="1" y="1"/></tptz:Speed></tptz:RelativeMove>""")
         if (r.contains("Fault") || r.isEmpty()) { relativeOk = false; return "no acepta giro exacto" }
         relativeOk = true
         return "giro exacto OK"

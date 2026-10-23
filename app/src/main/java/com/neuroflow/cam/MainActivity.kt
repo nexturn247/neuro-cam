@@ -84,10 +84,10 @@ class MainActivity : AppCompatActivity() {
         const val ALERT_COOLDOWN = 60_000L   // un aviso por minuto como máximo
         const val LOST_TIMEOUT = 15_000L     // sin ver a nadie 15 s: vuelve a su posición
         const val TICK = 150L                // la IA mira apenas termina la imagen anterior
-        const val SETTLE_EXTRA = 600L
+        const val SETTLE_EXTRA = 400L
         const val TILT_GAIN = 0.9f
-        const val MOTOR_BASE = 300f          // arranque del motor (ms)
-        const val MOTOR_MS_PER_DEG = 20f     // la MC200 gira lento        // atraso propio de la cámara + decodificar
+        const val MOTOR_BASE = 200f          // arranque del motor (ms)
+        const val MOTOR_MS_PER_DEG = 12f     // la MC200 gira lento        // atraso propio de la cámara + decodificar
         const val FRAME_W = 640
         const val FRAME_H = 360
     }
@@ -132,10 +132,10 @@ class MainActivity : AppCompatActivity() {
             onvif?.invertPan = v
             toast(if (v) "Izquierda/derecha invertidas" else "Izquierda/derecha normales")
         }
-        findViewById<Button>(R.id.left).setOnClickListener { manualMove(-0.6f, 0f) }
-        findViewById<Button>(R.id.right).setOnClickListener { manualMove(0.6f, 0f) }
-        findViewById<Button>(R.id.up).setOnClickListener { manualMove(0f, 0.6f) }
-        findViewById<Button>(R.id.down).setOnClickListener { manualMove(0f, -0.6f) }
+        findViewById<Button>(R.id.left).setOnClickListener { manualMove(-1f, 0f) }
+        findViewById<Button>(R.id.right).setOnClickListener { manualMove(1f, 0f) }
+        findViewById<Button>(R.id.up).setOnClickListener { manualMove(0f, 1f) }
+        findViewById<Button>(R.id.down).setOnClickListener { manualMove(0f, -1f) }
 
         aiThread.execute {
             try {
@@ -363,8 +363,8 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val x = if (moveX) (if (dx > 0) 0.6f else -0.6f) else 0f
-        val y = if (moveY) (if (dy > 0) -0.6f else 0.6f) else 0f
+        val x = if (moveX) (if (dx > 0) 1f else -1f) else 0f
+        val y = if (moveY) (if (dy > 0) -1f else 1f) else 0f
         val ms = (maxOf(if (moveX) abs(dx) else 0f, if (moveY) abs(dy) else 0f) * 1600).toLong().coerceIn(150, 800)
         turn(x, y, ms, "persona a la ${lado(x, y)} (${"%.2f".format(dx)})")
     }
@@ -396,7 +396,7 @@ class MainActivity : AppCompatActivity() {
         val edge = lastCx - 0.5f
         if (abs(edge) < 0.25f) return               // se perdió en el medio: no adivina
         searches++
-        val x = if (edge > 0) 0.6f else -0.6f
+        val x = if (edge > 0) 1f else -1f
         turn(x, 0f, 500, "buscando a la ${lado(x, 0f)}")
     }
 
