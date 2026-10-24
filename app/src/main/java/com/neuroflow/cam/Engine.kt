@@ -49,6 +49,7 @@ class Engine(private val ctx: Context) {
         fun onStatus(text: String)
         fun onHint(text: String)
         fun onBoxes(boxes: List<RectF>, tracking: Boolean)
+        fun onIpChanged() {}
     }
     var ui: Ui? = null
         set(v) { field = v; v?.onStatus(status); v?.onHint(hint) }
@@ -169,9 +170,51 @@ class Engine(private val ctx: Context) {
         onvif = Onvif(ip, user, pass).also { it.invertPan = prefs.getBoolean("invert", true) }
         ptzThread.execute {
             val err = onvif?.test()
-            if (err != null) hint = "Movimiento: $err"
+            if (err != null) { hint = "Movimiento: $err"; log("cámara no responde en $ip: $err"); rediscover() }
         }
         if (frameProvider == null) startOwnVideo() else stopOwnVideo()
+    }
+
+    private var discovering = false
+    private var lastHealth = 0L
+
+    /** La cámara no responde: la busca en el WiFi por si el router le cambió la IP. */
+    fun rediscover() {
+        if (discovering) return
+        discovering = true
+        status = "🔎 Buscando la cámara en el WiFi..."
+        Thread {
+            val old = prefs.getString("ip", "") ?: ""
+            val ips = Discovery.find(ctx)
+            log("búsqueda: encontradas ${ips.joinToString().ifEmpty { "ninguna" }}")
+            val ip = ips.firstOrNull { it == old } ?: ips.firstOrNull()
+            main.post {
+                discovering = false
+                when {
+                    ip == null -> status = "⚠ Cámara sin conexión. ¿Está prendida y en el mismo WiFi?"
+                    ip == old -> { status = "👁 Vigilando"; }
+                    else -> {
+                        prefs.edit().putString("ip", ip).apply()
+                        log("la cámara cambió de IP: $old -> $ip")
+                        status = "✅ Cámara encontrada en $ip"
+                        connect()
+                        ui?.onIpChanged()
+                    }
+                }
+            }
+        }.start()
+    }
+
+    /** Cada 30 s se fija que la cámara siga respondiendo. */
+    private fun healthCheck() {
+        val now = System.currentTimeMillis()
+        if (now - lastHealth < 30_000 || discovering || ptzBusy) return
+        lastHealth = now
+        val o = onvif ?: return
+        ptzThread.execute {
+            val err = o.test()
+            if (err != null) main.post { log("chequeo: cámara no responde ($err)"); rediscover() }
+        }
     }
 
     /**
@@ -277,6 +320,7 @@ class Engine(private val ctx: Context) {
         override fun run() {
             if (!running) return
             main.postDelayed(this, TICK)
+            healthCheck()
             val provider = frameProvider
             val p = (if (provider != null) viewPlayer else player) ?: return
             if (p.playbackState != Player.STATE_READY) return

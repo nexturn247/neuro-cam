@@ -55,7 +55,7 @@ class Onvif(private val ip: String, private val user: String, private val pass: 
     }
 
     /** Prueba la conexión. Devuelve null si anda, o el error. */
-    fun test(): String? = try { token(); null } catch (e: Exception) { e.message ?: "Error" }
+    fun test(): String? = try { profile = null; token(); null } catch (e: Exception) { e.message ?: "Error" }
 
     /** Mueve un rato y frena. x: -1 izquierda / 1 derecha. y: -1 abajo / 1 arriba. */
     fun pulse(xIn: Float, y: Float, ms: Long = 400): String {

@@ -138,6 +138,12 @@ class MainActivity : AppCompatActivity(), Engine.Ui {
 
     override fun onStatus(text: String) { status.text = text }
     override fun onHint(text: String) { if (!overlay.drawing && text.isNotEmpty()) hint.text = text }
+    override fun onIpChanged() {
+        startViewer()
+        attach()
+        toast("La cámara cambió de IP y la encontré sola")
+    }
+
     override fun onBoxes(boxes: List<RectF>, tracking: Boolean) {
         overlay.showZone = !tracking
         overlay.setBoxes(boxes)
